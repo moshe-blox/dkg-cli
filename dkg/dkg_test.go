@@ -3,10 +3,14 @@ package dkg
 import (
 	"encoding/hex"
 	"fmt"
+	"testing"
+
+	kyber_bls12381 "github.com/drand/kyber-bls12381"
+	"github.com/drand/kyber/share"
 	"github.com/drand/kyber/share/dkg"
+	"github.com/drand/kyber/sign/tbls"
 	bls3 "github.com/herumi/bls-eth-go-binary/bls"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 var TestSuite = Suite
@@ -142,7 +146,8 @@ func TestDKGFull(t *testing.T) {
 
 	// reconstruct from shares and verify
 	valSK := reconstructSK(t, sks)
-	valPK, err := resultsToValidatorPK(results, TestSuite.G1().(dkg.Suite))
+	suite := TestSuite.G1().(dkg.Suite)
+	valPK, err := resultsToValidatorPK(results, suite)
 	require.NoError(t, err)
 	require.EqualValues(t, valPK.Serialize(), valSK.GetPublicKey().Serialize())
 	fmt.Printf("Validator SK: %x\nValidator PK: %x\n", valSK.Serialize(), valPK.Serialize())
@@ -177,6 +182,25 @@ func TestDKGFull(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, sig.VerifyByte(valPK, root))
+
+	scheme := tbls.NewThresholdSchemeOnG2(kyber_bls12381.NewBLS12381Suite())
+	var kyberPartialSigs [][]byte
+	for _, result := range results {
+		sig, err := scheme.Sign(result.Key.PriShare(), root)
+		require.NoError(t, err)
+		kyberPartialSigs = append(kyberPartialSigs, sig)
+	}
+	require.Len(t, kyberPartialSigs, 4)
+	exp := share.NewPubPoly(suite, suite.Point().Base(), results[0].Key.Commitments())
+	masterSig, err := scheme.Recover(exp, root, kyberPartialSigs, 3, 4)
+	require.NoError(t, err)
+	err = scheme.VerifyRecovered(exp.Commit(), root, masterSig)
+	require.NoError(t, err)
+
+	var sign bls3.Sign
+	err = sign.Deserialize(masterSig)
+	require.NoError(t, err)
+	require.True(t, sign.VerifyByte(valPK, root))
 
 	// construct output struct
 	var output []*Output
